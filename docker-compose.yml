@@ -1,0 +1,50 @@
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+
+
+    networks:
+      - web
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/acme.json:/acme.json
+      - ./traefik/traefik.toml:/traefik.toml
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=web"  # Add this line
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.le.acme.tlschallenge=true"
+      - "--certificatesresolvers.le.acme.email=Krishna.KJ@mejuvante.com"
+      - "--certificatesresolvers.le.acme.storage=/acme.json"
+
+  fastapi:
+    build: .
+    container_name: fastapi_app
+    networks:
+      - web
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"  # Critical: specify network
+      - "traefik.http.routers.fastapi.rule=Host(`talk2data.mejuvante.ai`)"
+      - "traefik.http.routers.fastapi.entrypoints=websecure"
+      - "traefik.http.routers.fastapi.tls.certresolver=le"
+      - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
+      # Add HTTP redirect
+      - "traefik.http.routers.fastapi-http.rule=Host(`talk2data.mejuvante.ai`)"
+      - "traefik.http.routers.fastapi-http.entrypoints=web"
+      - "traefik.http.routers.fastapi-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+networks:
+  web:
+    external: true

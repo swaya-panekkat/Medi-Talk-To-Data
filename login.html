@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Login • Talk2Data</title>
+<style>
+  :root{
+    --dark:#1e3c61;  --teal:#61c4ca;  --sky:#2c99b7;
+    --ink:#0e1e33;   --bg:#f5f8fb;   --radius:18px;
+  }
+  html,body{ height:100%; }
+  body{
+    margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+    color:var(--ink);
+    background:
+      radial-gradient(1200px 700px at 15% 10%, rgba(44,153,183,.12), transparent 60%),
+      radial-gradient(1000px 600px at 85% 90%, rgba(97,196,202,.14), transparent 60%),
+      linear-gradient(180deg, #fbfdff 0%, #f7fbff 100%);
+    display:flex; align-items:center; justify-content:center; min-height:100svh;
+  }
+  .card{
+    width:min(94vw, 420px); background:#fff; border-radius:var(--radius);
+    padding: clamp(20px, 5vw, 36px);
+    box-shadow: 0 10px 30px rgba(30,60,97,.12), 0 2px 10px rgba(30,60,97,.06);
+    position:relative;
+  }
+  .card::before{
+    content:""; position:absolute; inset:0 0 auto 0; height:5px;
+    border-radius:var(--radius) var(--radius) 0 0;
+    background: linear-gradient(90deg, var(--sky), var(--teal));
+  }
+  .logo{ display:block; height:40px; margin:0 auto 8px; object-fit:contain; }
+  .title{
+    margin:6px 0 8px; text-align:center; font-size:clamp(22px, 4.6vw, 28px);
+    font-weight:800; letter-spacing:.2px; line-height:1.15;
+    background: linear-gradient(90deg, var(--teal) 0%, var(--sky) 50%, var(--dark) 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .subtitle{ text-align:center; font-size:13px; color:#5b6b85; margin:0 0 16px; }
+  .field{ margin:14px 0 18px; }
+  label{ display:block; font-size:13px; color:#5b6b85; margin:0 0 8px; font-weight:600; }
+  .input{ position:relative; }
+  input[type="text"], input[type="password"]{
+    width:100%; box-sizing:border-box; padding:14px 16px;
+    border-radius:14px; border:1px solid #e4e9f1; background:#f9fbfd; outline:none; font-size:15px;
+    transition: box-shadow .2s, border-color .2s, background .2s;
+  }
+  input:focus{ border-color: rgba(44,153,183,.55); background:#fff; box-shadow: 0 0 0 4px rgba(44,153,183,.12); }
+  .btn{
+    width:100%; border:0; border-radius:14px; padding:14px 16px; font-weight:800; font-size:15px; color:#fff;
+    background: linear-gradient(135deg, var(--sky) 0%, var(--teal) 70%);
+    box-shadow: 0 8px 18px rgba(44,153,183,.25); cursor:pointer;
+    transition: transform .06s, box-shadow .2s, filter .2s;
+  }
+  .btn:hover{ filter:brightness(1.05); box-shadow:0 10px 22px rgba(44,153,183,.32); }
+  .btn:active{ transform:translateY(1px); }
+  .helper{ margin-top:10px; text-align:center; font-size:12px; color:#6a7a93; }
+  .helper a{ color:var(--sky); text-decoration:none; font-weight:700; }
+  .helper a:hover{ text-decoration:underline; }
+  .error{
+    color:#c62828; background:#fdeaea; border:1px solid #f5c6c6;
+    font-size:12px; text-align:center; padding:8px 10px; border-radius:10px;
+    margin:0 0 10px; display:none;
+  }
+  @media (max-width:420px){ .card{ padding:22px 18px; } .btn{ padding:13px 14px; } }
+</style>
+</head>
+<body>
+  <main class="card" role="main" aria-labelledby="loginTitle">
+    <img class="logo" src="logo.png" alt="Company logo" />
+    <h1 id="loginTitle" class="title">Login to Talk2Data</h1>
+    <p class="subtitle">Use your PostgreSQL username and password.</p>
+
+    <div id="err" class="error" role="alert"></div>
+
+    <form id="loginForm" autocomplete="on">
+      <div class="field">
+        <label for="username">Username</label>
+        <div class="input">
+          <input id="username" name="username" type="text" placeholder="db_user" required />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="input">
+          <input id="password" name="password" type="password" placeholder="••••••••" required />
+        </div>
+      </div>
+
+      <button class="btn" type="submit">Log in</button>
+      <div class="helper">Forgot your password? <a href="#">Get help</a></div>
+    </form>
+  </main>
+
+<script>
+(function () {
+  const form = document.getElementById('loginForm');
+  const err = document.getElementById('err');
+
+  // If already logged in (cookie session exists), skip to dashboard
+  fetch('/api/me').then(r => {
+    if (r.status === 200) window.location.replace('dashboard.html');
+  }).catch(() => { /* ignore */ });
+
+  async function doLogin(username, password) {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      const msg = (data && (data.detail || data.error)) || 'Login failed';
+      throw new Error(msg);
+    }
+    // Backend sets HttpOnly cookie (t2d_token). Keep name locally for UI convenience.
+    localStorage.setItem('t2d_user', username);
+    localStorage.setItem('t2d_authed', '1');
+    return data;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.style.display = 'none';
+    err.textContent = '';
+
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    if (!username || !password) return;
+
+    try {
+      await doLogin(username, password);
+      window.location.href = 'dashboard.html';
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.style.display = 'block';
+    }
+  });
+})();
+</script>
+</body>
+</html>

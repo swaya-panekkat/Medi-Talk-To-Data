@@ -1,0 +1,36 @@
+version: 0.2
+
+env:
+  variables:
+    REGION: "eu-central-1"
+    ACCOUNT_ID: "575566219053"
+    REPOSITORY_URI: "575566219053.dkr.ecr.eu-central-1.amazonaws.com/t2data-fastapi"
+    IMAGE_TAG: "build-${CODEBUILD_BUILD_NUMBER}"
+
+phases:
+
+  pre_build:
+    commands:
+      - echo "---- Logging in to Amazon ECR ----"
+      - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REPOSITORY_URI
+      - echo "ECR Login Successful"
+
+  build:
+    commands:
+      - echo "---- Building Docker Image ----"
+      - docker build -t $REPOSITORY_URI:$IMAGE_TAG .
+      - docker tag $REPOSITORY_URI:$IMAGE_TAG $REPOSITORY_URI:latest
+      - echo "Docker Image Built Successfully"
+
+  post_build:
+    commands:
+      - echo "---- Pushing Docker Images to ECR ----"
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - docker push $REPOSITORY_URI:latest
+      - echo "Images pushed successfully!"
+      - echo "Image URI: $REPOSITORY_URI:$IMAGE_TAG"
+
+artifacts:
+  files:
+    - '**/*'
+  discard-paths: yes
