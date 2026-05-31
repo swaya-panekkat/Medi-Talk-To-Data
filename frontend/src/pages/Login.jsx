@@ -127,8 +127,10 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
-  const [tilt, setTilt]         = useState({ x: 0, y: 0 });
-  const [live, setLive]         = useState(false);
+  const [tilt, setTilt]   = useState({ x: 0, y: 0 });
+  const [live, setLive]   = useState(false);
+  const [mode, setMode]   = useState('login'); // 'login' | 'signup'
+  const [success, setSuccess] = useState('');
 
   useEffect(() => {
     fetch('/api/me')
@@ -148,19 +150,27 @@ export default function Login() {
   async function handleSubmit(e) {
     e.preventDefault();
     if (!username || !password) return;
-    setError(''); setLoading(true);
+    setError(''); setSuccess(''); setLoading(true);
+
+    const endpoint = mode === 'login' ? '/api/login' : '/api/signup';
     try {
-      const res  = await fetch('/api/login', {
+      const res  = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok)
-        throw new Error((data && (data.detail || data.error)) || 'Login failed');
-      localStorage.setItem('t2d_user', username);
-      localStorage.setItem('t2d_authed', '1');
-      navigate('/dashboard', { replace: true });
+      if (!res.ok)
+        throw new Error((data && (data.detail || data.error)) || `${mode} failed`);
+
+      if (mode === 'signup') {
+        setSuccess('Account created! You can now log in.');
+        setMode('login');
+      } else {
+        localStorage.setItem('t2d_user', username);
+        localStorage.setItem('t2d_authed', '1');
+        navigate('/dashboard', { replace: true });
+      }
     } catch (ex) { setError(ex.message); }
     finally { setLoading(false); }
   }
@@ -190,23 +200,35 @@ export default function Login() {
           >
             <div className="card-glow" />
 
-            <div className="d3-layer" style={{ '--z': '55px' }}>
-              <img className="logo" src="/logo.png" alt="Talk2Data" />
-            </div>
-
             <div className="d3-layer" style={{ '--z': '38px' }}>
-              <h1 id="loginTitle" className="login-title">Login to Talk2Data</h1>
-              <p className="subtitle">Use your PostgreSQL username and password.</p>
+              <img className="logo" src="/logo.png" alt="Talk2Data" />
+              <h1 id="loginTitle" className="login-title">
+                {mode === 'login' ? 'Login to Talk2Data' : 'Create Account'}
+              </h1>
+              {/* Tab switcher */}
+              <div className="auth-tabs">
+                <button type="button"
+                  className={`auth-tab ${mode === 'login' ? 'active' : ''}`}
+                  onClick={() => { setMode('login'); setError(''); setSuccess(''); }}>
+                  Log In
+                </button>
+                <button type="button"
+                  className={`auth-tab ${mode === 'signup' ? 'active' : ''}`}
+                  onClick={() => { setMode('signup'); setError(''); setSuccess(''); }}>
+                  Sign Up
+                </button>
+              </div>
             </div>
 
             <div className="d3-layer" style={{ '--z': '18px' }}>
-              {error && <div className="error-box" role="alert">{error}</div>}
+              {error   && <div className="error-box"   role="alert">{error}</div>}
+              {success && <div className="success-box" role="status">{success}</div>}
               <form onSubmit={handleSubmit} autoComplete="on">
                 <div className="field">
                   <label htmlFor="username">Username</label>
                   <div className="input-wrap">
                     <input id="username" name="username" type="text"
-                      placeholder="db_user" required
+                      placeholder="e.g. meena" required
                       value={username} onChange={e => setUsername(e.target.value)} />
                   </div>
                 </div>
@@ -219,7 +241,9 @@ export default function Login() {
                   </div>
                 </div>
                 <button className="btn" type="submit" disabled={loading}>
-                  {loading ? 'Logging in…' : 'Log in'}
+                  {loading
+                    ? (mode === 'login' ? 'Logging in…' : 'Creating account…')
+                    : (mode === 'login' ? 'Log in' : 'Create Account')}
                 </button>
                 <div className="helper">
                   Forgot your password? <a href="#">Get help</a>

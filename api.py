@@ -1,6 +1,8 @@
 # api.py
 import os
 import time
+import hashlib
+import secrets
 from typing import List, Any, Optional, Dict
 
 import io
@@ -65,6 +67,20 @@ class TablePreviewResponse(BaseModel):
     columns: List[Dict[str, str]]   # [{name, type}]
     sample: Optional[Dict[str, Any]] # first row as {col:value} or None
  
+# ---------- Password hashing (Python built-ins only) ----------
+def _hash_pw(password: str) -> str:
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
+    return f"pbkdf2:{salt}:{h.hex()}"
+
+def _verify_pw(password: str, stored: str) -> bool:
+    try:
+        _, salt, hashed = stored.split(":", 2)
+        h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
+        return secrets.compare_digest(h.hex(), hashed)
+    except Exception:
+        return False
+
 # ---------- Per-user session store (password + optional custom DB config) ----------
 # Structure: { token_string: {"password": str, "db_config": None | {host, port, dbname}} }
 USER_SESSIONS: Dict[str, dict] = {}
@@ -156,6 +172,19 @@ def role_member_of(username: str, required_role: str) -> bool:
 # ---------- Startup ----------
 @app.on_event("startup")
 def startup():
+    # Create app_users table so any user can register/login
+    try:
+        with main.engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS app_users (
+                    username     VARCHAR(100) PRIMARY KEY,
+                    password_hash TEXT        NOT NULL,
+                    created_at   TIMESTAMPTZ DEFAULT NOW()
+                )
+            """))
+    except Exception as e:
+        print("⚠️  Could not create app_users table:", e)
+
     try:
         main.populate_schema_if_empty()
     except Exception as e:
@@ -236,29 +265,57 @@ def table_preview(
     return TablePreviewResponse(schema=schema, table=table, columns=columns, sample=sample)
  
 # ---------- Auth routes ----------
+@app.post("/api/signup")
+def signup(req: LoginRequest):
+    user = (req.username or "").strip()
+    if not user or not req.password:
+        raise HTTPException(status_code=400, detail="Username and password are required")
+    if len(req.password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    try:
+        with main.engine.begin() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM app_users WHERE username = :u"), {"u": user}
+            ).fetchone()
+            if exists:
+                raise HTTPException(status_code=409, detail="Username already taken")
+            conn.execute(
+                text("INSERT INTO app_users (username, password_hash) VALUES (:u, :h)"),
+                {"u": user, "h": _hash_pw(req.password)},
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Signup failed: {e}")
+    return {"ok": True, "message": "Account created. You can now log in."}
+
+
 @app.post("/api/login")
 def login(req: LoginRequest, response: Response):
     user = (req.username or "").strip()
     if not user or not req.password:
-        raise HTTPException(status_code=400, detail="Username and password required")
-    if not role_exists_and_can_login(user):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if LOGIN_REQUIRED_ROLE and not role_member_of(user, LOGIN_REQUIRED_ROLE):
-        raise HTTPException(status_code=403, detail="Not allowed for this application")
+        raise HTTPException(status_code=400, detail="Username and password are required")
+
+    # Auto-create account if user doesn't exist, then login
     try:
-        conn = psycopg2.connect(
-            dbname=AUTH_DBNAME,
-            user=user,
-            password=req.password,
-            host=AUTH_HOST,
-            port=AUTH_PORT,
-            connect_timeout=5,
-        )
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-        conn.close()
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        with main.engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT password_hash FROM app_users WHERE username = :u"),
+                {"u": user},
+            ).fetchone()
+
+            if row is None:
+                # First time — create account automatically
+                conn.execute(
+                    text("INSERT INTO app_users (username, password_hash) VALUES (:u, :h)"),
+                    {"u": user, "h": _hash_pw(req.password)},
+                )
+            elif not _verify_pw(req.password, row[0]):
+                raise HTTPException(status_code=401, detail="Incorrect password")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login error: {e}")
  
     token = create_token(sub=user, name=user)
     # Store password in session so dynamic DB connections can use it later

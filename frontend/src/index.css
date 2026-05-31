@@ -384,6 +384,34 @@ input:-webkit-autofill:hover {
 }
 .helper a:hover { color:#fff; text-shadow:0 0 14px var(--glow-teal); }
 
+/* Auth tabs */
+.auth-tabs {
+  display:flex; gap:4px;
+  background:rgba(255,255,255,.05);
+  border:1px solid var(--border-dim);
+  border-radius:12px; padding:4px;
+  margin:14px 0 0;
+}
+.auth-tab {
+  flex:1; border:0; border-radius:9px;
+  padding:8px 12px; font-size:13px; font-weight:700;
+  cursor:pointer; background:transparent; color:var(--text-2);
+  transition:background .2s, color .2s;
+}
+.auth-tab.active {
+  background:linear-gradient(135deg, var(--sky), var(--teal));
+  color:#fff;
+}
+
+/* Success message */
+.success-box {
+  color:#4ade80;
+  background:rgba(74,222,128,.08);
+  border:1px solid rgba(74,222,128,.25);
+  font-size:12px; text-align:center;
+  padding:10px 12px; border-radius:11px; margin:0 0 12px;
+}
+
 .error-box {
   color:#ff8fa3;
   background:rgba(255,60,80,.10);

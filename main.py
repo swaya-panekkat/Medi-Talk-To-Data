@@ -141,8 +141,9 @@ def populate_schema_if_empty():
 # ======================
 def list_accessible_schemas_and_tables(username: str, eng=None) -> dict[str, list[str]]:
     """
-    Return {schema: [table,...]} for which `username` has USAGE on schema
-    and SELECT on table. Accepts optional engine override.
+    Return {schema: [table,...]} visible to the admin engine.
+    All app-level users can see all tables; access control is handled
+    by the application layer, not PostgreSQL roles.
     """
     _eng = eng or engine
     with _eng.connect() as conn:
@@ -154,12 +155,9 @@ def list_accessible_schemas_and_tables(username: str, eng=None) -> dict[str, lis
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE c.relkind IN ('r','p','v','m')
                   AND n.nspname NOT IN ('pg_catalog','information_schema')
-                  AND has_schema_privilege(:u, n.nspname, 'USAGE')
-                  AND has_table_privilege(:u, c.oid, 'SELECT')
                 ORDER BY n.nspname, c.relname
                 """
-            ),
-            {"u": username},
+            )
         ).fetchall()
 
     out: dict[str, list[str]] = {}
@@ -169,8 +167,8 @@ def list_accessible_schemas_and_tables(username: str, eng=None) -> dict[str, lis
 
 def extract_schema_for_user(username: str, eng=None) -> list[str]:
     """
-    Build docs like "Table: schema.table\nColumns: ..." but filtered to user's privileges.
-    Accepts optional engine override.
+    Build docs for all tables visible to the admin engine.
+    All app-level users get the same view.
     """
     _eng = eng or engine
     with _eng.connect() as conn:
@@ -184,12 +182,9 @@ def extract_schema_for_user(username: str, eng=None) -> list[str]:
                 JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
                 WHERE c.relkind IN ('r','p','v','m')
                   AND n.nspname NOT IN ('pg_catalog','information_schema')
-                  AND has_schema_privilege(:u, n.nspname, 'USAGE')
-                  AND has_table_privilege(:u, c.oid, 'SELECT')
                 ORDER BY n.nspname, c.relname, a.attnum
                 """
-            ),
-            {"u": username},
+            )
         ).fetchall()
 
     schema_dict: dict[str, list[str]] = {}
