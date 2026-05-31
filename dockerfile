@@ -1,21 +1,33 @@
-# Step 1: Use a base Python image
-FROM python:3.11-slim
+# ── Stage 1: Build React frontend ──────────────────────────────────────────────
+FROM node:20-slim AS frontend-builder
+WORKDIR /app/frontend
 
-# Step 2: Set the working directory inside the container
+# Install deps first (layer-cached until package.json changes)
+COPY frontend/package.json ./
+RUN npm install
+
+# Copy rest of frontend source and build
+COPY frontend/ .
+# Copy logo so Vite bundles it into the build
+COPY logo.png ./public/logo.png
+RUN npm run build
+# vite outDir is '../dist' → output lands at /app/dist
+
+# ── Stage 2: Python FastAPI ─────────────────────────────────────────────────────
+FROM python:3.11-slim
 WORKDIR /app
 
-# Step 3: Copy requirements first (for caching layers)
 COPY requirements.txt .
-
-# Step 4: Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Step 5: Copy the rest of the project files
+# Copy backend source
 COPY . .
 
-# Step 6: Expose port (Flask usually runs on 5000)
+# Copy React build output from Stage 1
+COPY --from=frontend-builder /app/dist ./dist
+
+# Tell FastAPI to serve static files from the React build
+ENV STATIC_DIR=dist
+
 EXPOSE 8000
-
-# Step 7: Run the app (assuming main.py is the entry point)
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
-

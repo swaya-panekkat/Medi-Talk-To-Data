@@ -33,13 +33,49 @@ pg_url = URL.create(
 engine = create_engine(pg_url, future=True)
 
 # ======================
-# Perplexity API (Sonar Pro)
 # ======================
-PPLX_API_URL = "https://api.perplexity.ai/chat/completions"
+# Gemini API
+# ======================
+GEMINI_MODEL   = "gemini-2.0-flash"
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models"
+    f"/{GEMINI_MODEL}:generateContent"
+)
 
-def _get_pplx_key() -> str | None:
-    # Read on demand, so .env/exports picked up even if module was imported earlier
-    return os.getenv("PERPLEXITY_API_KEY") or os.getenv("PPLX_API_KEY")
+def _get_gemini_key() -> str | None:
+    return os.getenv("GEMINI_API_KEY", "").strip() or None
+
+# ======================
+# Ollama (local fallback)
+# ======================
+OLLAMA_BASE  = (os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_API_URL") or "http://host.docker.internal:11434")
+OLLAMA_MODEL = (os.getenv("OLLAMA_MODEL") or os.getenv("OLLAMA_PRIMARY_MODEL") or "llama3.2")
+
+def _ollama_available() -> bool:
+    try:
+        r = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=3)
+        return r.ok
+    except Exception:
+        return False
+
+def _call_ollama(prompt: str) -> str:
+    url = f"{OLLAMA_BASE}/v1/chat/completions"
+    payload = {
+        "model":       OLLAMA_MODEL,
+        "temperature": 0,
+        "stream":      False,
+        "messages": [
+            {"role": "system", "content": (
+                "You are a PostgreSQL expert. "
+                "Return ONLY the SQL query — no explanation, no markdown, no code fences."
+            )},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    resp = requests.post(url, json=payload,
+                         headers={"Content-Type": "application/json"}, timeout=120)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 # ======================
@@ -103,12 +139,13 @@ def populate_schema_if_empty():
 # ======================
 # Permission-aware helpers
 # ======================
-def list_accessible_schemas_and_tables(username: str) -> dict[str, list[str]]:
+def list_accessible_schemas_and_tables(username: str, eng=None) -> dict[str, list[str]]:
     """
     Return {schema: [table,...]} for which `username` has USAGE on schema
-    and SELECT on table.
+    and SELECT on table. Accepts optional engine override.
     """
-    with engine.connect() as conn:
+    _eng = eng or engine
+    with _eng.connect() as conn:
         rows = conn.execute(
             text(
                 """
@@ -130,11 +167,13 @@ def list_accessible_schemas_and_tables(username: str) -> dict[str, list[str]]:
         out.setdefault(schema, []).append(table)
     return out
 
-def extract_schema_for_user(username: str) -> list[str]:
+def extract_schema_for_user(username: str, eng=None) -> list[str]:
     """
     Build docs like "Table: schema.table\nColumns: ..." but filtered to user's privileges.
+    Accepts optional engine override.
     """
-    with engine.connect() as conn:
+    _eng = eng or engine
+    with _eng.connect() as conn:
         rows = conn.execute(
             text(
                 """
@@ -194,76 +233,89 @@ def english_to_sql(
     allowed_tables_note: str | None = None,
 ) -> str:
     """
-    Convert English to SQL using Perplexity Sonar Pro.
-    `schema_context` should contain lines like: "Table: schema.table\nColumns: col(dt), ..."
-    Optionally pass `allowed_tables_note` as a comma-separated list of schema.table
-    to hard-hint the model to stay within the user’s permissions.
+    Convert English to SQL.
+    Tries Gemini first — if quota exceeded or unavailable, falls back to Ollama.
     """
-    api_key = _get_pplx_key()
-    if not api_key:
-        raise RuntimeError("PERPLEXITY_API_KEY environment variable is not set.")
-
-    rules = """
-- Return ONLY a single SQL query (no explanations, no markdown).
-- Always use the provided schema and table names exactly.
-- Always include schema name (e.g., schema.table).
-- Prefer explicit JOINs with ON conditions.
-- Do not use backticks or MySQL syntax.
-""".strip()
-
+    rules = (
+        "- Return ONLY the SQL query, nothing else.\n"
+        "- No explanations, no markdown, no code fences.\n"
+        "- Always prefix table names with schema (e.g. public.patients).\n"
+        "- Use standard PostgreSQL syntax.\n"
+        "- End with a semicolon."
+    )
     if allowed_tables_note:
-        rules += f"\n- You MUST only use tables from this allowlist: {allowed_tables_note}\n"
+        rules += f"\n- Only use these tables: {allowed_tables_note}"
 
-    system_prompt = f"""
-You are an assistant that converts English into SQL queries.
-Database: PostgreSQL.
+    full_prompt = (
+        f"You are a PostgreSQL expert.\n"
+        f"Schema:\n{schema_context}\n\n"
+        f"Rules:\n{rules}\n\n"
+        f"Question: {prompt}\n\nSQL:"
+    )
 
-Relevant schema information:
-{schema_context}
+    gemini_key = _get_gemini_key()
 
-Rules:
-{rules}
-""".strip()
+    # ── 1. Try Gemini ────────────────────────────────────────────────
+    if gemini_key:
+        payload = {
+            "contents": [{"parts": [{"text": full_prompt}]}],
+            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 512},
+        }
+        try:
+            resp = requests.post(
+                f"{GEMINI_API_URL}?key={gemini_key}",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30,
+            )
+        except Exception as e:
+            raise RuntimeError(f"Gemini connection error: {str(e).replace(gemini_key, '***')}")
 
-    payload = {
-        "model": "sonar-pro",
-        "temperature": 0.0,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "return_citations": False,
-        "stream": False,
-    }
+        if resp.status_code == 429:
+            # Try Ollama if available, otherwise raise a clear message
+            if _ollama_available():
+                print("⏳ Gemini quota reached — using Ollama")
+            else:
+                raise RuntimeError(
+                    "Gemini quota reached for today. "
+                    "Create a NEW key at aistudio.google.com/apikey "
+                    "(use 'Create in new project') and update .env file."
+                )
+        elif not resp.ok:
+            raise RuntimeError(
+                f"Gemini returned status {resp.status_code}. "
+                f"Check that your API key is valid and from aistudio.google.com."
+            )
+        else:
+            try:
+                sql_raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return clean_sql_output(sql_raw)
+            except (KeyError, IndexError):
+                raise RuntimeError("Gemini returned an unexpected response format.")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+    # ── 2. Fallback: Ollama (local) ──────────────────────────────────
+    if _ollama_available():
+        print(f"✅ Using Ollama ({OLLAMA_MODEL})")
+        try:
+            sql_raw = _call_ollama(full_prompt)
+            return clean_sql_output(sql_raw)
+        except Exception as e:
+            raise RuntimeError(f"Ollama error: {e}")
 
-    try:
-        resp = requests.post(PPLX_API_URL, json=payload, headers=headers, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        sql_raw = data["choices"][0]["message"]["content"].strip()
-    except requests.HTTPError as http_err:
-        # Bubble up a concise message (keeps stack in server logs)
-        raise RuntimeError(f"Perplexity API error: {http_err.response.status_code} {http_err.response.text[:200]}") from http_err
-    except (KeyError, IndexError) as parse_err:
-        raise RuntimeError(f"Unexpected Perplexity response shape: {resp.text[:400]}") from parse_err
-    except Exception as e:
-        raise RuntimeError(f"Perplexity request failed: {e}") from e
-
-    return clean_sql_output(sql_raw)
+    # ── 3. Nothing available ─────────────────────────────────────────
+    raise RuntimeError(
+        "No AI key configured. Add GEMINI_API_KEY=your_key in the .env file."
+    )
 
 
-def run_query(sql: str):
+def run_query(sql: str, eng=None):
     """
     Execute SQL via SQLAlchemy and return a pandas DataFrame, or None on error.
+    Accepts an optional engine override for per-user external DB connections.
     """
+    _eng = eng or engine
     try:
-        with engine.connect() as conn:
+        with _eng.connect() as conn:
             df = pd.read_sql_query(sql, conn)
         return df
     except Exception as e:
@@ -278,37 +330,50 @@ _schema_token = r'\"?([a-zA-Z_][\w$]*)\"?'
 _table_token  = r'\"?([a-zA-Z_][\w$]*)\"?'
 _schema_table_regex = re.compile(fr"{_schema_token}\s*\.\s*{_table_token}")
 
+# SQL keywords that are never schema or table names
+_SQL_KEYWORDS = {
+    'select','from','where','and','or','not','join','on','as','group','order',
+    'by','having','limit','offset','insert','update','delete','create','drop',
+    'alter','into','values','set','case','when','then','else','end','null',
+    'true','false','distinct','count','sum','avg','max','min','inner','outer',
+    'left','right','full','cross','union','all','exists','in','between','like',
+    'is','asc','desc','with','over','partition','filter','extract','date',
+    'time','timestamp','interval','return','do','begin','commit','rollback',
+}
+
 def _extract_schema_tables(sql: str) -> set[tuple[str, str]]:
     """
-    Very simple parser: finds tokens that look like schema.table.
-    It intentionally ignores unqualified names and alias.column pairs.
+    Finds schema.table references in SQL.
+    Skips anything where schema or table is a SQL keyword (e.g. gender.SELECT).
     """
     found = set()
     for m in _schema_table_regex.finditer(sql):
         schema, table = m.group(1), m.group(2)
-        found.add((schema, table))
+        if schema.lower() not in _SQL_KEYWORDS and table.lower() not in _SQL_KEYWORDS:
+            found.add((schema, table))
     return found
 
-def _allowed_pairs(username: str) -> set[tuple[str, str]]:
-    m = list_accessible_schemas_and_tables(username)
+def _allowed_pairs(username: str, eng=None) -> set[tuple[str, str]]:
+    m = list_accessible_schemas_and_tables(username, eng=eng)
     return {(s, t) for s, tables in m.items() for t in tables}
 
-def _verify_sql_access(sql: str, username: str) -> tuple[bool, list[str]]:
+def _verify_sql_access(sql: str, username: str, eng=None) -> tuple[bool, list[str]]:
     required = _extract_schema_tables(sql)
-    allowed = _allowed_pairs(username)
+    allowed = _allowed_pairs(username, eng=eng)
     violations = [(s, t) for (s, t) in required if (s, t) not in allowed]
     return (len(violations) == 0, [f"{s}.{t}" for s, t in violations])
 
 # ======================
 # Main pipeline (permission-aware)
 # ======================
-def ask_database_structured_for_user(username: str, english_prompt: str):
+def ask_database_structured_for_user(username: str, english_prompt: str, eng=None):
     """
     Returns: dict with { sql, columns, rows, empty, error } for a given Postgres role.
+    Accepts optional engine override for external DB connections.
     """
     try:
         # Build a schema context only from user-visible tables
-        user_docs = extract_schema_for_user(username)
+        user_docs = extract_schema_for_user(username, eng=eng)
         if not user_docs:
             return {
                 "sql": None,
@@ -324,7 +389,7 @@ def ask_database_structured_for_user(username: str, english_prompt: str):
 
         sql = english_to_sql(english_prompt, context, allowed_tables_note=allowlist)
 
-        ok, bad = _verify_sql_access(sql, username)
+        ok, bad = _verify_sql_access(sql, username, eng=eng)
         if not ok:
             return {
                 "sql": sql,
@@ -334,7 +399,7 @@ def ask_database_structured_for_user(username: str, english_prompt: str):
                 "error": f"Query references objects you don't have access to: {', '.join(bad)}",
             }
 
-        df = run_query(sql)
+        df = run_query(sql, eng=eng)
         if df is None:
             return {"sql": sql, "columns": [], "rows": [], "empty": True, "error": "Query failed."}
         if df.empty:

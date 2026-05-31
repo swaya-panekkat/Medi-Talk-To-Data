@@ -1,3 +1,59 @@
+# services:
+#   traefik:
+#     image: traefik:v3
+#     container_name: traefik
+#     restart: unless-stopped
+#     ports:
+#       - "80:80"
+#       - "443:443"
+#       - "8080:8080"
+
+
+#     networks:
+#       - web
+#     volumes:
+#       - /var/run/docker.sock:/var/run/docker.sock:ro
+#       - ./traefik/acme.json:/acme.json
+#       - ./traefik/traefik.toml:/traefik.toml
+#     command:
+#       - "--api.insecure=true"
+#       - "--providers.docker=true"
+#       - "--providers.docker.exposedbydefault=false"
+#       - "--providers.docker.network=web"  # Add this line
+#       - "--entrypoints.web.address=:80"
+#       - "--entrypoints.websecure.address=:443"
+#       - "--certificatesresolvers.le.acme.tlschallenge=true"
+#       - "--certificatesresolvers.le.acme.email=Krishna.KJ@mejuvante.com"
+#       - "--certificatesresolvers.le.acme.storage=/acme.json"
+
+#   fastapi:
+#     build: .
+#     container_name: fastapi_app
+#     networks:
+#       - web
+#     restart: unless-stopped
+#     labels:
+#       - "traefik.enable=true"
+#       - "traefik.docker.network=web"  # Critical: specify network
+#       - "traefik.http.routers.fastapi.rule=Host(`talk2data.mejuvante.ai`)"
+#       - "traefik.http.routers.fastapi.entrypoints=websecure"
+#       - "traefik.http.routers.fastapi.tls.certresolver=le"
+#       - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
+#       # Add HTTP redirect
+#       - "traefik.http.routers.fastapi-http.rule=Host(`talk2data.mejuvante.ai`)"
+#       - "traefik.http.routers.fastapi-http.entrypoints=web"
+#       - "traefik.http.routers.fastapi-http.middlewares=redirect-to-https"
+#       - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+# networks:
+#   web:
+#     external: true
+
+
+
+
+
+
 services:
   traefik:
     image: traefik:v3
@@ -5,46 +61,146 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
-      - "443:443"
       - "8080:8080"
-
-
     networks:
       - web
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/acme.json:/acme.json
-      - ./traefik/traefik.toml:/traefik.toml
     command:
       - "--api.insecure=true"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=web"  # Add this line
+      - "--providers.docker.network=web"
       - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--certificatesresolvers.le.acme.tlschallenge=true"
-      - "--certificatesresolvers.le.acme.email=Krishna.KJ@mejuvante.com"
-      - "--certificatesresolvers.le.acme.storage=/acme.json"
 
   fastapi:
     build: .
     container_name: fastapi_app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
     networks:
       - web
-    restart: unless-stopped
+    environment:
+      PGDATABASE: talk_to_data
+      PGUSER: postgres
+      PGPASSWORD: postgres123
+      PGHOST: postgres_db
+      PGPORT: 5432
+      STATIC_DIR: dist
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ANONYMIZED_TELEMETRY: "False"
+      OLLAMA_API_URL: http://ollama:11434
+      OLLAMA_PRIMARY_MODEL: phi3
+      OLLAMA_FALLBACK_MODEL: phi3
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=web"  # Critical: specify network
-      - "traefik.http.routers.fastapi.rule=Host(`talk2data.mejuvante.ai`)"
-      - "traefik.http.routers.fastapi.entrypoints=websecure"
-      - "traefik.http.routers.fastapi.tls.certresolver=le"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.fastapi.rule=Host(`localhost`)"
+      - "traefik.http.routers.fastapi.entrypoints=web"
       - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
-      # Add HTTP redirect
-      - "traefik.http.routers.fastapi-http.rule=Host(`talk2data.mejuvante.ai`)"
-      - "traefik.http.routers.fastapi-http.entrypoints=web"
-      - "traefik.http.routers.fastapi-http.middlewares=redirect-to-https"
-      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+  # fastapi:
+  # build: .
+  # environment:
+  #   PGDATABASE: my_hospital_db        # your database name
+  #   PGUSER: postgres                  # your DB username
+  #   PGPASSWORD: mypassword123         # your DB password
+  #   PGHOST: host.docker.internal      # for local PC database
+  #   PGPORT: 5432
+  #   STATIC_DIR: dist
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.docker.network=web"
+  #     - "traefik.http.routers.fastapi.rule=Host(`localhost`)"
+  #     - "traefik.http.routers.fastapi.entrypoints=web"
+  #     - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
+
+  postgres:
+    image: postgres:15
+    container_name: postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: talk_to_data
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5432:5432"
+    networks:
+      - web
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
 networks:
   web:
     external: true
+
+volumes:
+  postgres_data:
+
+
+
+
+
+# services:
+#   traefik:
+#     image: traefik:v3
+#     container_name: traefik
+#     restart: unless-stopped
+#     ports:
+#       - "80:80"
+#       - "8080:8080"
+#     networks:
+#       - web
+#     volumes:
+#       - /var/run/docker.sock:/var/run/docker.sock:ro
+#     command:
+#       - "--api.insecure=true"
+#       - "--providers.docker=true"
+#       - "--providers.docker.exposedbydefault=false"
+#       - "--providers.docker.network=web"
+#       - "--entrypoints.web.address=:80"
+
+#   fastapi:
+#     build: .
+#     container_name: fastapi_app
+#     restart: unless-stopped
+#     ports:
+#       - "8000:8000"
+#     networks:
+#       - web
+#     environment:
+#       PGDATABASE: my_hospital_db        # ← your database name
+#       PGUSER: postgres                  # ← your DB username
+#       PGPASSWORD: mypassword123         # ← your DB password
+#       PGHOST: host.docker.internal      # ← for local PC database
+#       PGPORT: 5432
+#       STATIC_DIR: dist
+#     labels:
+#       - "traefik.enable=true"
+#       - "traefik.docker.network=web"
+#       - "traefik.http.routers.fastapi.rule=Host(`localhost`)"
+#       - "traefik.http.routers.fastapi.entrypoints=web"
+#       - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
+
+#   # postgres:                          # ← commented out, using external DB
+#   #   image: postgres:15
+#   #   container_name: postgres_db
+#   #   restart: unless-stopped
+#   #   environment:
+#   #     POSTGRES_DB: talk_to_data
+#   #     POSTGRES_USER: postgres
+#   #     POSTGRES_PASSWORD: postgres123
+#   #   ports:
+#   #     - "5432:5432"
+#   #   networks:
+#   #     - web
+#   #   volumes:
+#   #     - postgres_data:/var/lib/postgresql/data
+
+# networks:
+#   web:
+#     external: true
+
+# volumes:
+#   postgres_data:
